@@ -1,0 +1,12 @@
+/infrastructure/**/terraform/.terraform
+/infrastructure/**/terraform/.terraform*
+/infrastructure/**/terraform/terraform.tfstate*
+
+###> phpstorm ###
+.idea
+###< phpstorm ###
+
+source/vendor
+
+ssh.key
+service-account.json

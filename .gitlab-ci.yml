@@ -1,0 +1,152 @@
+default:
+  interruptible: true
+  image: gcr.io/cloud-builders/gcloud
+  before_script:
+    - export SERVICE_NAME=event-recorder
+    - export ARTIFACTS_BUCKET=event-recorder-function-artifacts
+    - export GOOGLE_CREDENTIALS=service-account.json
+  tags:
+    - k8s-runner
+
+stages:
+  - get-service-account
+  - get-ssh-key
+  - build
+  - upload
+  - deploy
+
+workflow:
+  rules:
+    # deploy to live on any tag like "v0.1.420"
+    - if: $CI_COMMIT_TAG =~ /v[0-9]*.[0-9]*.[0-9]*/
+      variables:
+        PROJECT: my-live-env
+    # deploy to staging on push to master
+    - if: $CI_COMMIT_BRANCH == "master"
+      variables:
+        PROJECT: my-staging-env
+    # deploy to develop on any commit (but if not tag for live) AND not in "master" AND don't duplicate build with MR
+    - if: $CI_COMMIT_TAG !~ /v[0-9]*.[0-9]*.[0-9]*/ && $CI_COMMIT_BRANCH != "master" && $CI_PIPELINE_SOURCE != "merge_request_event"
+      variables:
+        PROJECT: my-dev-env
+
+get-service-account:
+  stage: get-service-account
+  script:
+    - echo Deploying to $PROJECT
+    - (if [ "${PROJECT}" == "my-dev-env" ]; then echo $DEVELOP_SERVICE_ACCOUNT > $GOOGLE_CREDENTIALS; fi);
+    - (if [ "${PROJECT}" == "my-staging-env" ]; then echo $STAGING_SERVICE_ACCOUNT > $GOOGLE_CREDENTIALS; fi);
+    - (if [ "${PROJECT}" == "my-live-env" ]; then echo $LIVE_SERVICE_ACCOUNT > $GOOGLE_CREDENTIALS; fi);
+  artifacts:
+    expire_in: 10 mins
+    paths:
+      - service-account.json
+
+get-ssh-key:
+  stage: get-ssh-key
+  script:
+    # currently, same SSH secret used for all environments
+    - echo $DEVELOP_SERVICE_ACCOUNT > service-account-for-ssh-download.json
+    - gcloud auth activate-service-account --key-file=service-account-for-ssh-download.json
+    - gcloud config set project my-dev-env
+    - gcloud secrets versions access latest --secret=YARIK_SSH_KEY --format='get(payload.data)' | tr '_-' '/+' | base64 -d > ssh.key
+  needs:
+    - job: get-service-account
+      artifacts: true
+  artifacts:
+    expire_in: 10 mins
+    paths:
+      - ssh.key
+
+build:
+  stage: build
+  image: composer
+  script:
+    - cd source
+    - composer install --no-dev
+    - zip -r ../build/source.zip *
+  artifacts:
+    expire_in: 10 mins
+    paths:
+      - ./build/source.zip
+
+upload:
+  stage: upload
+  script:
+    - gcloud auth activate-service-account --key-file=service-account.json
+    - gcloud config set project $PROJECT
+    - gsutil cp ./build/source.zip gs://$ARTIFACTS_BUCKET/$SERVICE_NAME/$CI_COMMIT_SHORT_SHA/artifact.zip
+  needs:
+    - job: get-service-account
+      artifacts: true
+    - job: build
+      artifacts: true
+
+upload-branch:
+  stage: upload
+  script:
+    - gcloud auth activate-service-account --key-file=service-account.json
+    - gcloud config set project $PROJECT
+    - gsutil cp ./build/source.zip gs://$ARTIFACTS_BUCKET/$SERVICE_NAME/$CI_COMMIT_BRANCH/artifact.zip
+  needs:
+    - job: get-service-account
+      artifacts: true
+    - job: build
+      artifacts: true
+  rules:
+    - if: $CI_COMMIT_BRANCH
+
+upload-tag:
+  stage: upload
+  script:
+    - gcloud auth activate-service-account --key-file=service-account.json
+    - gcloud config set project $PROJECT
+    - gsutil cp ./build/source.zip gs://$ARTIFACTS_BUCKET/$SERVICE_NAME/$CI_COMMIT_TAG/artifact.zip
+  needs:
+    - job: get-service-account
+      artifacts: true
+    - job: build
+      artifacts: true
+  rules:
+    - if: $CI_COMMIT_TAG
+
+.deploy:
+  stage: deploy
+  image: hashicorp/terraform:1.0.4
+  # not good to interrupt terraform!
+  interruptible: false
+  script:
+    - echo Deploying to $PROJECT
+    - mkdir /root/.ssh
+    - mv ssh.key /root/.ssh/id_rsa
+    - chmod 600 /root/.ssh/id_rsa
+    - touch /root/.ssh/known_hosts
+    - ssh-keyscan gitlab.smartexpose.com >> /root/.ssh/known_hosts
+    - echo Artifact version $CI_COMMIT_SHORT_SHA
+    - mv $GOOGLE_CREDENTIALS infrastructure/$PROJECT/terraform/
+    - cd infrastructure/$PROJECT/terraform
+    - terraform init
+    - terraform apply -auto-approve
+      -var="git_commit_short=$CI_COMMIT_SHORT_SHA"
+      -var-file="$PROJECT.tfvars"
+  needs:
+    - job: get-service-account
+      artifacts: true
+    - job: get-ssh-key
+      artifacts: true
+    - job: upload
+
+deploy develop:
+  extends: .deploy
+  rules:
+    - if: $PROJECT == "my-dev-env"
+
+deploy staging:
+  extends: .deploy
+  rules:
+    - if: $PROJECT == "my-staging-env"
+
+deploy live:
+  extends: .deploy
+  rules:
+    - if: $PROJECT == "my-live-env"

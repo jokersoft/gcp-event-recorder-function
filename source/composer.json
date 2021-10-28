@@ -1,0 +1,35 @@
+{
+    "name": "allmyhomes/event-recorder-function",
+    "description": "Event Recorder Cloud Function",
+    "type": "project",
+    "license": "UNLICENSED",
+    "minimum-stability": "stable",
+    "require": {
+        "php": ">=7.4",
+        "ext-pdo": "*",
+        "google/cloud-functions-framework": "^0.7",
+        "psr/http-message": "^1.0"
+    },
+    "autoload": {
+        "psr-4": {
+            "AllMyHomes\\CloudFunction\\": "src"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Tests\\": "tests/"
+        }
+    },
+    "scripts": {
+        "start": [
+            "Composer\\Config::disableProcessTimeout",
+            "FUNCTION_TARGET=record DB_URL=\"mysql://root:password@mysql:3306/databaseName?serverVersion=5.8\" php -S localhost:${PORT:-8080} vendor/bin/router.php"
+        ],
+        "tests": [
+            "vendor/bin/phpunit tests/"
+        ]
+    },
+    "require-dev": {
+        "phpunit/phpunit": "^9.5"
+    }
+}
